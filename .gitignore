@@ -4,4 +4,3 @@ node_modules/
 # Private files - not part of MCP server
 register-session-key.mjs
 index.html
-server.mjs
