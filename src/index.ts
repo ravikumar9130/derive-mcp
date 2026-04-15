@@ -177,7 +177,10 @@ async function main() {
             const serverInstance = createMcpServer();
             await serverInstance.connect(transport);
             (req as IncomingMessage & { body: unknown }).body = parsedBody;
+            
+            console.error(`[MCP] Handling initialize, transport.sessionId before: ${transport.sessionId}`);
             await transport.handleRequest(req, res);
+            console.error(`[MCP] Initialize response sent, sessionId: ${transport.sessionId}`);
             return;
           }
         }

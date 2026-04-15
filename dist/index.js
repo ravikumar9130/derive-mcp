@@ -4,7 +4,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer as createHttpServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { CallToolRequestSchema, ListToolsRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest, } from '@modelcontextprotocol/sdk/types.js';
 import { DeriveClient, DeriveApiError } from './client.js';
 import { tools } from './tools.js';
 const client = new DeriveClient();
@@ -97,6 +97,7 @@ async function main() {
         const httpServer = createHttpServer(async (req, res) => {
             const url = req.url ?? '/';
             const sessionId = req.headers['mcp-session-id'];
+            console.error(`[MCP] ${req.method} ${url} - Session: ${sessionId || 'none'}`);
             if (req.method === 'GET' && url === '/health') {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ status: 'ok' }));
@@ -117,9 +118,11 @@ async function main() {
                 // New session: create transport
                 if (req.method === 'POST') {
                     const body = await readBody(req).catch(() => '{}');
+                    console.error(`[MCP] POST body: ${body.substring(0, 200)}`);
                     const parsedBody = JSON.parse(body);
                     // Check if this is an initialize request
-                    if (parsedBody.method === 'initialize') {
+                    console.error(`[MCP] Checking isInitializeRequest: ${isInitializeRequest(parsedBody)}, method: ${parsedBody?.method}`);
+                    if (isInitializeRequest(parsedBody)) {
                         const transport = new StreamableHTTPServerTransport({
                             sessionIdGenerator: () => randomUUID(),
                             onsessioninitialized: (id) => { transports[id] = transport; },
@@ -131,7 +134,9 @@ async function main() {
                         const serverInstance = createMcpServer();
                         await serverInstance.connect(transport);
                         req.body = parsedBody;
+                        console.error(`[MCP] Handling initialize, transport.sessionId before: ${transport.sessionId}`);
                         await transport.handleRequest(req, res);
+                        console.error(`[MCP] Initialize response sent, sessionId: ${transport.sessionId}`);
                         return;
                     }
                 }
