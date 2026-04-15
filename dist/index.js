@@ -2,7 +2,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createServer as createHttpServer } from 'node:http';
+import express from 'express';
 import { randomUUID } from 'node:crypto';
 import { CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest, } from '@modelcontextprotocol/sdk/types.js';
 import { DeriveClient, DeriveApiError } from './client.js';
@@ -94,72 +94,93 @@ async function main() {
     if (port) {
         // HTTP mode — with session management for Streamable HTTP transport
         const transports = {};
-        const httpServer = createHttpServer(async (req, res) => {
-            const url = req.url ?? '/';
-            const sessionId = req.headers['mcp-session-id'];
-            console.error(`[MCP] ${req.method} ${url} - Session: ${sessionId || 'none'}`);
-            if (req.method === 'GET' && url === '/health') {
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ status: 'ok' }));
-                return;
-            }
-            if (req.method === 'GET' && url === '/metrics') {
-                const metrics = client.getMetrics();
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify(metrics, null, 2));
-                return;
-            }
-            if (url === '/mcp') {
-                // Existing session: reuse transport
-                if (sessionId && transports[sessionId]) {
-                    await transports[sessionId].handleRequest(req, res);
-                    return;
-                }
-                // New session: create transport
-                if (req.method === 'POST') {
-                    const body = await readBody(req).catch(() => '{}');
-                    console.error(`[MCP] POST body: ${body.substring(0, 200)}`);
-                    const parsedBody = JSON.parse(body);
-                    // Check if this is an initialize request
-                    console.error(`[MCP] Checking isInitializeRequest: ${isInitializeRequest(parsedBody)}, method: ${parsedBody?.method}`);
-                    if (isInitializeRequest(parsedBody)) {
-                        const transport = new StreamableHTTPServerTransport({
-                            sessionIdGenerator: () => randomUUID(),
-                            onsessioninitialized: (id) => { transports[id] = transport; },
-                        });
-                        transport.onclose = () => {
-                            if (transport.sessionId)
-                                delete transports[transport.sessionId];
-                        };
-                        const serverInstance = createMcpServer();
-                        await serverInstance.connect(transport);
-                        req.body = parsedBody;
-                        console.error(`[MCP] Handling initialize, transport.sessionId before: ${transport.sessionId}`);
-                        await transport.handleRequest(req, res);
-                        console.error(`[MCP] Initialize response sent, sessionId: ${transport.sessionId}`);
-                        return;
-                    }
-                }
-                // No valid session and not an initialize request
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session ID' }, id: null }));
-                return;
-            }
-            // OAuth well-known endpoints (Claude compatibility)
-            if (url === '/.well-known/oauth-authorization-server') {
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                    issuer: `https://derive-mcp-production.up.railway.app`,
-                    authorization_endpoint: '',
-                    token_endpoint: '',
-                    response_types_supported: [],
-                }));
-                return;
-            }
-            res.writeHead(404).end();
+        const app = express();
+        app.use(express.json());
+        app.get('/health', (_req, res) => {
+            res.json({ status: 'ok' });
         });
-        httpServer.listen(port, '0.0.0.0', () => {
-            console.error(`Derive MCP server v1.0.0 listening on port ${port}`);
+        app.get('/metrics', (_req, res) => {
+            res.json(client.getMetrics());
+        });
+        app.post('/mcp', async (req, res) => {
+            const sessionId = req.headers['mcp-session-id'];
+            console.log(`[MCP] POST /mcp - Session: ${sessionId || 'none'}`);
+            try {
+                if (sessionId && transports[sessionId]) {
+                    console.log(`[MCP] Reusing existing session: ${sessionId}`);
+                    await transports[sessionId].handleRequest(req, res, req.body);
+                }
+                else if (!sessionId && isInitializeRequest(req.body)) {
+                    console.log(`[MCP] Creating new session for initialize request`);
+                    const transport = new StreamableHTTPServerTransport({
+                        sessionIdGenerator: () => randomUUID(),
+                        onsessioninitialized: (id) => {
+                            console.log(`[MCP] Session initialized: ${id}`);
+                            transports[id] = transport;
+                        },
+                    });
+                    transport.onclose = () => {
+                        if (transport.sessionId) {
+                            console.log(`[MCP] Session closed: ${transport.sessionId}`);
+                            delete transports[transport.sessionId];
+                        }
+                    };
+                    const serverInstance = createMcpServer();
+                    await serverInstance.connect(transport);
+                    await transport.handleRequest(req, res, req.body);
+                }
+                else {
+                    console.log(`[MCP] Bad request - no session ID and not initialize`);
+                    res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session ID' }, id: null });
+                }
+            }
+            catch (error) {
+                console.error('[MCP] Error:', error);
+                if (!res.headersSent) {
+                    res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
+                }
+            }
+        });
+        app.get('/mcp', async (req, res) => {
+            const sessionId = req.headers['mcp-session-id'];
+            console.log(`[MCP] GET /mcp - Session: ${sessionId || 'none'}`);
+            if (!sessionId || !transports[sessionId]) {
+                return res.status(400).send('Invalid or missing session ID');
+            }
+            try {
+                await transports[sessionId].handleRequest(req, res);
+            }
+            catch (error) {
+                console.error('[MCP] GET error:', error);
+                if (!res.headersSent)
+                    res.status(500).end();
+            }
+        });
+        app.delete('/mcp', async (req, res) => {
+            const sessionId = req.headers['mcp-session-id'];
+            console.log(`[MCP] DELETE /mcp - Session: ${sessionId || 'none'}`);
+            if (!sessionId || !transports[sessionId]) {
+                return res.status(400).send('Invalid or missing session ID');
+            }
+            try {
+                await transports[sessionId].handleRequest(req, res);
+            }
+            catch (error) {
+                console.error('[MCP] DELETE error:', error);
+                if (!res.headersSent)
+                    res.status(500).end();
+            }
+        });
+        app.get('/.well-known/oauth-authorization-server', (_req, res) => {
+            res.json({
+                issuer: `https://derive-mcp-production.up.railway.app`,
+                authorization_endpoint: '',
+                token_endpoint: '',
+                response_types_supported: [],
+            });
+        });
+        app.listen(port, '0.0.0.0', () => {
+            console.log(`[MCP] Server listening on port ${port}`);
         });
         return;
     }
