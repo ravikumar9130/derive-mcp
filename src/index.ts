@@ -11,7 +11,6 @@ import {
   isInitializeRequest,
 } from '@modelcontextprotocol/sdk/types.js';
 import { DeriveClient, DeriveApiError } from './client.js';
-import { IncomingMessage } from 'node:http';
 import { tools } from './tools.js';
 import type {
   GetCurrencyParams,
@@ -116,15 +115,6 @@ function createMcpServer() {
   return server;
 }
 
-function readBody(req: IncomingMessage | any): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk: Buffer) => { data += chunk.toString(); });
-    req.on('end', () => resolve(data));
-    req.on('error', reject);
-  });
-}
-
 async function main() {
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : undefined;
 
@@ -134,6 +124,19 @@ async function main() {
 
     const app = express();
     app.use(express.json());
+
+    // CORS — allow all origins so browser-based and remote MCP clients can connect
+    app.use((_req: Request, res: Response, next) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, mcp-session-id, MCP-Protocol-Version');
+      res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
+      next();
+    });
+
+    app.options('*', (_req: Request, res: Response) => {
+      res.status(204).end();
+    });
 
     app.get('/health', (_req: Request, res: Response) => {
       res.json({ status: 'ok' });
@@ -151,6 +154,10 @@ async function main() {
         if (sessionId && transports[sessionId]) {
           console.log(`[MCP] Reusing existing session: ${sessionId}`);
           await transports[sessionId].handleRequest(req, res, req.body);
+        } else if (sessionId && !transports[sessionId]) {
+          // Session ID provided but not found — likely a server restart; client must reinitialise
+          console.log(`[MCP] Session not found: ${sessionId}`);
+          res.status(404).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Session not found. Please reinitialise.' }, id: null });
         } else if (!sessionId && isInitializeRequest(req.body)) {
           console.log(`[MCP] Creating new session for initialize request`);
           const transport = new StreamableHTTPServerTransport({
@@ -184,10 +191,15 @@ async function main() {
     app.get('/mcp', async (req: Request, res: Response) => {
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       console.log(`[MCP] GET /mcp - Session: ${sessionId || 'none'}`);
-      
-      if (!sessionId || !transports[sessionId]) {
-        return res.status(400).send('Invalid or missing session ID');
+
+      if (!sessionId) {
+        return res.status(400).json({ error: 'Missing mcp-session-id header' });
       }
+      if (!transports[sessionId]) {
+        return res.status(404).json({ error: 'Session not found. Please reinitialise.' });
+      }
+      // Disable nginx buffering so SSE events are flushed immediately
+      res.setHeader('X-Accel-Buffering', 'no');
       try {
         await transports[sessionId].handleRequest(req, res);
       } catch (error) {
@@ -199,9 +211,12 @@ async function main() {
     app.delete('/mcp', async (req: Request, res: Response) => {
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       console.log(`[MCP] DELETE /mcp - Session: ${sessionId || 'none'}`);
-      
-      if (!sessionId || !transports[sessionId]) {
-        return res.status(400).send('Invalid or missing session ID');
+
+      if (!sessionId) {
+        return res.status(400).json({ error: 'Missing mcp-session-id header' });
+      }
+      if (!transports[sessionId]) {
+        return res.status(404).json({ error: 'Session not found.' });
       }
       try {
         await transports[sessionId].handleRequest(req, res);
