@@ -207,7 +207,7 @@ async function main() {
     });
 
     httpServer.listen(port, '0.0.0.0', () => {
-      console.error(`Derive MCP server v1.0.0 listening on port ${port}`);
+      console.log(`[MCP] Server listening on port ${port}`);
     });
     return;
   }
