@@ -47,7 +47,7 @@ export interface GetFundingRateHistoryParams {
   instrument_name: string;
   start_timestamp?: number;
   end_timestamp?: number;
-  period?: '900' | '3600' | '14400' | '28800' | '86400';
+  period?: 900 | 3600 | 14400 | 28800 | 86400;
 }
 
 export interface GetInterestRateHistoryParams {

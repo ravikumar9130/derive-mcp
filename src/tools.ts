@@ -16,7 +16,7 @@ const paginationParams = {
 
 const INSTRUMENT_TYPE_ENUM = ['erc20', 'option', 'perp'] as const;
 const MARGIN_TYPE_ENUM = ['PM', 'PM2', 'SM'] as const;
-const PERIOD_ENUM = ['900', '3600', '14400', '28800', '86400'] as const;
+const PERIOD_ENUM = [900, 3600, 14400, 28800, 86400] as const;
 
 export const tools: Tool[] = [
   {
@@ -121,7 +121,7 @@ export const tools: Tool[] = [
         instrument_name: { type: 'string', description: 'Perp instrument name, e.g. ETH-PERP' },
         start_timestamp: { type: 'integer', description: 'Start timestamp in seconds (default 0, max 30 days ago)' },
         end_timestamp: { type: 'integer', description: 'End timestamp in seconds (default now)' },
-        period: { type: 'string', enum: PERIOD_ENUM, description: 'Period in seconds' },
+        period: { type: 'integer', enum: PERIOD_ENUM, description: 'Period in seconds' },
       },
       required: ['instrument_name'],
     },
